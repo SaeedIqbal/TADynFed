@@ -1,5 +1,3 @@
-# prototype_manager.py
-
 from client_model import TADynFedClientModel
 from tadynfed_core import PrototypeMemoryBank
 import torch

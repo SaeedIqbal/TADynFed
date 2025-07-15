@@ -1,5 +1,3 @@
-# cross_disease_adapter.py
-
 import torch
 import torch.nn as nn
 

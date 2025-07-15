@@ -1,5 +1,3 @@
-# train_utils.py
-
 import os
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -30,7 +28,8 @@ class BraTS21ClientDataset(Dataset):
         label_path = os.path.join(self.root_dir, 'labels', self.label_files[idx])
 
         input_modalities = {m: load_nii_slice(image_path) for m in self.modality_subset}
+        input_modalities['shared'] = torch.cat(list(input_modalities.values()), dim=0)
         label = load_nii_slice(label_path)
-        label = F.one_hot(label.long(), num_classes=3).float().view(-1, 3)
+        label = F.one_hot(torch.tensor(label.argmax(), dtype=torch.long), num_classes=3).float().view(-1, 3)
 
         return input_modalities, label

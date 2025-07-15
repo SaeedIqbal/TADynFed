@@ -1,5 +1,3 @@
-# tadynfed_core.py
-
 import torch
 import torch.nn as nn
 from typing import Dict, List, Optional, Union

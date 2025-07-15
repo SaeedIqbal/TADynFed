@@ -1,5 +1,4 @@
-# client_scorer.py
-
+'''
 import torch
 from collections import defaultdict
 from sklearn.calibration import calibration_curve
@@ -61,3 +60,44 @@ class ClientReliabilityScorer:
 
     def reset_calibration(self, client_id: str):
         self.client_calibration[client_id].clear()
+
+#--------------------------------------------------------------
+'''
+#=====================================================================================================
+import torch
+import os
+from typing import Dict, List, Optional
+from collections import defaultdict
+
+class ClientReliabilityScorer:
+    def __init__(self, alpha: float = 0.7, beta: float = 0.3,
+                 delta: float = 10, epsilon: float = 0.1):
+        self.alpha = alpha
+        self.beta = beta
+        self.delta = delta
+        self.epsilon = epsilon
+        self.client_quality = defaultdict(float)          # Q_k(t): data quality score
+        self.client_tenure = defaultdict(int)            # T_k(t): duration of active participation
+        self.last_active_round = defaultdict(int)        # t_k^last: last round client was active
+        self.smoothed_quality = defaultdict(float)       # \tilde{Q}_k(t): smoothed quality
+        self.reliability_scores = defaultdict(float)
+        self.dropout_prob = 0.2                        # p_drop: random exclusion probability
+
+    def update_client_stats(self, client_id: str, quality_score: float, round_num: int):
+        self.client_quality[client_id] = quality_score
+        self.client_tenure[client_id] += 1
+        self.last_active_round[client_id] = round_num
+
+    def compute_weight(self, client_id: str, round_num: int) -> float:
+        t_gap = round_num - self.last_active_round[client_id]
+        decay_factor = torch.exp(-t_gap / self.delta).item()
+        reliability = decay_factor * (self.client_quality[client_id] + self.epsilon * self.client_tenure[client_id])
+        self.reliability_scores[client_id] = reliability
+        return reliability
+
+    def apply_temporal_smoothing(self, client_id: str, gamma: float = 0.9):
+        self.smoothed_quality[client_id] = gamma * self.client_quality[client_id] + \
+                                           (1 - gamma) * self.smoothed_quality.get(client_id, self.client_quality[client_id])
+
+    def is_client_dropout(self, client_id: str) -> bool:
+        return random.random() < self.dropout_prob * (1 - self.reliability_scores[client_id])

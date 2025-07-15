@@ -1,5 +1,3 @@
-# client_model.py
-
 from tadynfed_core import (
     ModalityTailoredEncoder,
     ModalitySharedEncoder,
@@ -88,3 +86,74 @@ class TADynFedClientModel(nn.Module):
             "cont": loss_cont,
             "compact": loss_compact
         }
+#-----------------------------------------------------------------------
+
+'''
+import torch
+import torch.nn as nn
+from prototype_memory import PrototypeMemoryBank
+from collections import defaultdict
+
+class ModalityTailoredEncoder(nn.Module):
+    def __init__(self, base_model: nn.Module, modality: str):
+        super(ModalityTailoredEncoder, self).__init__()
+        self.base_model = base_model
+        self.modality = modality
+        self.classifier = nn.Linear(256, 256)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        features = self.base_model(x).mean(dim=[2,3,4])  # Global average pooling
+        return self.classifier(features)
+
+
+class TADynFedClientModel(nn.Module):
+    MODALITIES = ['T1', 'T1c', 'T2', 'FLAIR']
+    
+    def __init__(self, base_model: nn.Module, num_tissues: int = 3, feature_dim: int = 256):
+        super(TADynFedClientModel, self).__init__()
+
+        # Modality-specific encoders
+        self.tailored_encoders = nn.ModuleDict({
+            m: ModalityTailoredEncoder(base_model, m) for m in self.MODALITIES
+        })
+
+        # Shared encoder
+        self.shared_encoder = base_model
+
+        # Prototype memory banks
+        self.prototype_banks = {
+            m: PrototypeMemoryBank(m, feature_dim=feature_dim) for m in self.MODALITIES
+        }
+
+        # Segmentation head
+        self.segmentation_head = nn.Sequential(
+            nn.Linear(feature_dim * len(self.MODALITIES), feature_dim),
+            nn.ReLU(),
+            nn.Linear(feature_dim, num_tissues),
+            nn.Softmax(dim=1)
+        )
+
+    def forward(self, inputs: dict, selected_modalities: list):
+        tailored_reps = {m: self.tailored_encoders[m](inputs[m]) for m in selected_modalities}
+        shared_rep = self.shared_encoder(inputs['shared']).mean(dim=[2,3,4])
+        return tailored_reps, shared_rep
+
+    def compensate_missing_modality(self, available_modalities: list) -> Dict[str, torch.Tensor]:
+        """Use prototype retrieval to compensate for missing modalities"""
+        compensated = {}
+        all_modalities = set(self.MODALITIES)
+        missing = all_modalities - set(available_modalities)
+
+        for m in missing:
+            query_emb = torch.cat([feat for feat in self.tailored_encoders.values()], dim=1)
+            retrieved_feat = self.prototype_banks[m].retrieve(query_emb)
+            compensated[m] = retrieved_feat
+
+        return compensated
+
+    def update_prototypes(self, inputs: dict, selected_modalities: list):
+        """Update prototype memory bank based on current tailored encoder outputs"""
+        for m in selected_modalities:
+            feat = self.tailored_encoders[m](inputs[m]).detach()
+            self.prototype_banks[m].update(feat.mean(dim=0))
+'''

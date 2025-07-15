@@ -1,68 +1,63 @@
-# aggregation_module.py
-
 import torch
-import os
-import json
-from torch import nn
+from collections import OrderedDict
+from client_scorer import ClientReliabilityScorer
 
 class DynamicFederatedAggregator:
-    def __init__(self, global_model: nn.Module, scorer: 'ClientReliabilityScorer', param_size_bytes: int = 4):
-        """
-        Initialize aggregator with communication cost tracking.
-        :param global_model: Global segmentation backbone
-        :param scorer: Reliability scorer instance
-        :param param_size_bytes: Size of one parameter in bytes (e.g., 4 for float32)
-        """
-        self.global_model = global_model
+    def __init__(self, global_model: nn.Module, scorer: ClientReliabilityScorer):
+        self.global_model = global_model.to('cpu')
         self.scorer = scorer
-        self.param_size_bytes = param_size_bytes
-        self.communication_log = []  # Log of MB per round
-        self.round_params_sent = {}  # For client-wise logging
+        self.shadow_models = {}  # Store shadow models per client
+        self.round_params_sent = defaultdict(float)
+        self.param_size_bytes = 4  # Assuming float32
 
-    def aggregate(self, local_models: dict, participation_indicator: dict, round_num: int):
+    def aggregate(self, local_models: Dict[str, nn.Module], participation_indicator: Dict[str, bool], round_num: int):
         """
-        Aggregate client models into global using dynamic weights.
-        Tracks total parameters sent per round and computes communication cost.
+        Aggregate local model updates into a global model using adaptive weights.
+        Tracks communication cost in MB.
         """
-        avg_state_dict = {}
-        weights = {}
+        avg_state_dict = OrderedDict()
+        total_weight = 0.0
 
-        total_params_sent = 0
+        # Compute total number of parameters
+        total_params = sum(p.numel() for p in self.global_model.parameters())
+
         for client_id, model in local_models.items():
             if participation_indicator.get(client_id, False):
                 weight = self.scorer.compute_weight(client_id, round_num)
-                weights[client_id] = weight
-
-                state = model.state_dict()
-                num_params = sum(p.numel() for p in model.parameters())
-                total_params_sent += num_params
+                state = model.cpu().state_dict()
 
                 for key in self.global_model.state_dict():
                     if key not in avg_state_dict:
                         avg_state_dict[key] = weight * state[key]
                     else:
                         avg_state_dict[key] += weight * state[key]
+                total_weight += weight
 
-        total_weight = sum(weights.values())
+                # Track communication cost
+                params_sent = sum(p.numel() for p in model.parameters())
+                comm_cost_mb = (params_sent * self.param_size_bytes) / (1024 ** 2)
+                self.round_params_sent[round_num] += comm_cost_mb
+
+        # Normalize by total weight
         for key in avg_state_dict:
             avg_state_dict[key] /= total_weight
 
         self.global_model.load_state_dict(avg_state_dict)
 
-        # Compute and store communication cost
-        comm_cost_mb = (total_params_sent * self.param_size_bytes) / (1024 ** 2)
-        self.communication_log.append(comm_cost_mb)
-        self.round_params_sent[round_num] = comm_cost_mb
+        # Update shadow models every 5 rounds
+        if round_num % 5 == 0:
+            for client_id in local_models:
+                self.shadow_models[client_id] = local_models[client_id].state_dict().copy()
 
-        print(f"Round {round_num} | Total Communication Cost: {comm_cost_mb:.2f} MB")
+    def sync_shadow_model(self, client_id: str, model: nn.Module):
+        """Sync shadow model if available"""
+        if client_id in self.shadow_models:
+            model.load_state_dict(self.shadow_models[client_id])
 
     def save_communication_log(self, path: str):
-        """Save communication cost logs to JSON file"""
-        log_path = os.path.join(path, 'communication_log.json')
-        with open(log_path, 'w') as f:
-            json.dump({
-                "communication_cost_per_round": self.round_params_sent,
-                "total_communication_cost": sum(self.communication_log),
-                "avg_communication_cost": sum(self.communication_log) / len(self.communication_log)
-            }, f, indent=2)
+        """Save communication cost logs"""
+        os.makedirs(path, exist_ok=True)
+        log_path = os.path.join(path, "communication_cost.json")
+        with open(log_path, "w") as f:
+            json.dump(self.round_params_sent, f, indent=2)
         print(f"Communication cost log saved at {log_path}")
